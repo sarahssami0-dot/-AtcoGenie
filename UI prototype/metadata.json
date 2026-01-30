@@ -1,0 +1,7 @@
+{
+  "name": "Conversational Analytics UI-v2",
+  "description": "A minimal, pastel-colored interface for a conversational analytics tool, featuring a chat history panel and a main chat screen.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
