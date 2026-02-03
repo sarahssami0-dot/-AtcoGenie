@@ -178,6 +178,16 @@ app.MapGet("/api/chats", async (string? archived, AtcoGenie.Server.Application.S
     return await chatService.GetUserSessionsAsync(userId, isArchived);
 });
 
+// SEARCH: Query across all chat titles and message content
+app.MapGet("/api/chats/search", async (string? q, AtcoGenie.Server.Application.Services.IChatHistoryService chatService, HttpContext context) =>
+{
+    var userId = context.User.FindFirst("Genie:HcmsId")?.Value 
+                 ?? context.User.Identity?.Name 
+                 ?? "Anonymous";
+                 
+    return await chatService.SearchSessionsAsync(userId, q ?? "");
+});
+
 app.MapGet("/api/chats/{id}", async (int id, AtcoGenie.Server.Application.Services.IChatHistoryService chatService, HttpContext context) =>
 {
     var userId = context.User.FindFirst("Genie:HcmsId")?.Value 
@@ -220,6 +230,12 @@ app.MapPut("/api/chats/{id}/rename", async (int id, string title, AtcoGenie.Serv
 app.MapPut("/api/chats/{id}/archive", async (int id, AtcoGenie.Server.Application.Services.IChatHistoryService chatService) =>
 {
     await chatService.ArchiveSessionAsync(id);
+    return Results.Ok();
+});
+
+app.MapPut("/api/chats/{id}/unarchive", async (int id, AtcoGenie.Server.Application.Services.IChatHistoryService chatService) =>
+{
+    await chatService.UnarchiveSessionAsync(id);
     return Results.Ok();
 });
 

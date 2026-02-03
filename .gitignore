@@ -32,6 +32,9 @@ yarn-error.log*
 *.suo
 *.userprefs
 
+# Sensitive configuration files (API Keys)
+**/appsettings.json
+**/appsettings.*.json
 # Force inclusion of publish folder (Explicit)
 !publish/
 !atcogenie-client/dist/

@@ -11,8 +11,10 @@ public interface IChatHistoryService
     Task<ChatSession> CreateSessionAsync(string userId, string title, string modelId);
     Task AddMessageAsync(int sessionId, string sender, string content);
     Task ArchiveSessionAsync(int sessionId);
+    Task UnarchiveSessionAsync(int sessionId);
     Task DeleteSessionAsync(int sessionId);
     Task RenameSessionAsync(int sessionId, string newTitle);
+    Task<List<ChatSession>> SearchSessionsAsync(string userId, string query);
 }
 
 public class ChatHistoryService : IChatHistoryService
@@ -90,6 +92,17 @@ public class ChatHistoryService : IChatHistoryService
             await _context.SaveChangesAsync();
         }
     }
+
+    public async Task UnarchiveSessionAsync(int sessionId)
+    {
+        var session = await _context.ChatSessions.FindAsync(sessionId);
+        if (session != null)
+        {
+            session.IsArchived = false;
+            session.LastActiveAt = DateTime.UtcNow;
+            await _context.SaveChangesAsync();
+        }
+    }
     
     public async Task RenameSessionAsync(int sessionId, string newTitle)
     {
@@ -109,5 +122,24 @@ public class ChatHistoryService : IChatHistoryService
             _context.ChatSessions.Remove(session);
             await _context.SaveChangesAsync();
         }
+    }
+
+    public async Task<List<ChatSession>> SearchSessionsAsync(string userId, string query)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+            return await GetUserSessionsAsync(userId, false);
+
+        var lowerQuery = query.ToLower();
+
+        // Search in session titles and message content
+        var matchingSessions = await _context.ChatSessions
+            .Include(s => s.Messages)
+            .Where(s => s.UserId == userId && !s.IsArchived)
+            .Where(s => s.Title.ToLower().Contains(lowerQuery) ||
+                        s.Messages.Any(m => m.Content.ToLower().Contains(lowerQuery)))
+            .OrderByDescending(s => s.LastActiveAt)
+            .ToListAsync();
+
+        return matchingSessions;
     }
 }

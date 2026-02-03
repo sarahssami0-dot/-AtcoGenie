@@ -16,6 +16,8 @@ interface ChatSession {
   lastMessage: string; // Not in DB model directly but good for UI summary (or derived)
   model: string;
   isArchived: boolean;
+  lastActiveAt?: string;
+  createdAt?: string;
 }
 
 interface Model {
@@ -81,6 +83,8 @@ function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [theme, setTheme] = useState<Theme>('light');
   const [chatSearchTerm, setChatSearchTerm] = useState('');
+  const [isSearchMode, setIsSearchMode] = useState(false);
+  const [searchResults, setSearchResults] = useState<ChatSession[]>([]);
   const [isModelSelectorOpen, setIsModelSelectorOpen] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [activeMenuSessionId, setActiveMenuSessionId] = useState<number | null>(null);
@@ -104,6 +108,9 @@ function App() {
   // Copy Button Feedback State
   const [copiedMessageId, setCopiedMessageId] = useState<number | null>(null);
 
+  // Archived Chat Warning Modal
+  const [showArchivedWarning, setShowArchivedWarning] = useState(false);
+
   // Refs
   const messageContainerRef = useRef<HTMLDivElement>(null);
   const promptTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -120,10 +127,12 @@ function App() {
   ];
 
   const availableModels: Model[] = [
-    { id: 'gemini-3-pro', name: 'Gemini 3 Pro', quality: 'High' },
-    { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', quality: 'Fast' },
-    { id: 'claude-3-sonnet', name: 'Claude 3 Sonnet', quality: 'Balanced' }
+    { id: 'gemini-3-pro-thinking', name: 'Gemini 3 Pro (Thinking)', quality: 'Deep Analysis' },
+    { id: 'gemini-3-pro-fast', name: 'Gemini 3 Pro (Fast)', quality: 'Quick Response' }
   ];
+
+  // State for user-selected model (independent of session)
+  const [selectedModelId, setSelectedModelId] = useState<string>('gemini-3-pro-fast');
 
   // --- Effects ---
 
@@ -186,8 +195,7 @@ function App() {
   }, []);
 
   // --- Accessors ---
-  const selectedSession = chatHistory.find(c => c.id === selectedSessionId);
-  const currentModel = availableModels.find(m => m.id === selectedSession?.model) || availableModels[0];
+  const currentModel = availableModels.find(m => m.id === selectedModelId) || availableModels[0];
 
   const currentChatMessages = allMessages
     .filter(m => m.sessionId === selectedSessionId)
@@ -298,6 +306,18 @@ function App() {
     setActiveMenuSessionId(null);
   };
 
+  const unarchiveSession = async (e: React.MouseEvent, id: number) => {
+    e.stopPropagation();
+    try {
+      await fetch(`/api/chats/${id}/unarchive`, { method: 'PUT' });
+      // Remove from archived view and switch to active tab
+      setChatHistory(prev => prev.filter(c => c.id !== id));
+      setActiveTab('active');
+      if (selectedSessionId === id) setSelectedSessionId(null);
+    } catch (e) { console.error("Failed to unarchive", e); }
+    setActiveMenuSessionId(null);
+  };
+
   const renameSession = async (e: React.MouseEvent, id: number) => {
     e.stopPropagation();
     const session = chatHistory.find(c => c.id === id);
@@ -311,6 +331,50 @@ function App() {
       } catch (e) { console.error("Failed to rename", e); }
     }
     setActiveMenuSessionId(null);
+  };
+
+  // Search across conversations (calls backend API)
+  const handleSearch = async (query: string) => {
+    setChatSearchTerm(query);
+    if (!query.trim()) {
+      setSearchResults([]);
+      return;
+    }
+    try {
+      const res = await fetch(`/api/chats/search?q=${encodeURIComponent(query)}`);
+      const data = await res.json();
+      setSearchResults(data);
+    } catch (e) {
+      console.error("Search failed", e);
+    }
+  };
+
+  // Enter search mode
+  const openSearchMode = () => {
+    setIsSearchMode(true);
+    setSelectedSessionId(null);
+    setChatSearchTerm('');
+    setSearchResults([]);
+  };
+
+  // Exit search mode and load a conversation
+  const selectSearchResult = (sessionId: number) => {
+    setIsSearchMode(false);
+    setSelectedSessionId(sessionId);
+    setChatSearchTerm('');
+    setSearchResults([]);
+  };
+
+  // Format date for display
+  const formatSearchDate = (dateString: string) => {
+    const date = new Date(dateString);
+    const today = new Date();
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+
+    if (date.toDateString() === today.toDateString()) return 'Today';
+    if (date.toDateString() === yesterday.toDateString()) return 'Yesterday';
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   };
 
   // --- UI Actions ---
@@ -334,10 +398,7 @@ function App() {
   };
 
   const handleModelSelect = (modelId: string) => {
-    // Only updates local state logic for now, could be persisted if needed
-    if (selectedSessionId) {
-      setChatHistory(prev => prev.map(s => s.id === selectedSessionId ? { ...s, model: modelId } : s));
-    }
+    setSelectedModelId(modelId);
     setIsModelSelectorOpen(false);
   };
 
@@ -505,6 +566,13 @@ function App() {
   const sendMessage = async (e?: FormEvent) => {
     e?.preventDefault();
     console.log("sendMessage called", { input: currentUserInput, sessionId: selectedSessionId });
+
+    // Check if current chat is archived
+    const currentSession = chatHistory.find(c => c.id === selectedSessionId);
+    if (currentSession?.isArchived) {
+      setShowArchivedWarning(true);
+      return;
+    }
 
     const messageText = currentUserInput.trim();
     if (!messageText) {
@@ -860,29 +928,27 @@ function App() {
           <div className="px-2 pb-2">
             <input
               type="text"
-              placeholder="Search history..."
-              value={chatSearchTerm}
-              onChange={(e) => setChatSearchTerm(e.target.value)}
-              className="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 placeholder-slate-400 focus:ring-1 focus:ring-blue-500 mb-4 focus:outline-none"
+              placeholder="Search conversations..."
+              onFocus={openSearchMode}
+              readOnly
+              className="w-full bg-white dark:bg-slate-800 border-2 border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 placeholder-slate-400 cursor-pointer hover:border-blue-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 focus:outline-none transition-colors"
             />
             <p className="mb-2 text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider">{activeTab === 'active' ? 'Recent' : 'Archived'}</p>
             {filteredChatHistory.map(session => (
               <div key={session.id} className="relative group">
-                <button onClick={() => setSelectedSessionId(session.id)}
+                <button onClick={() => { setSelectedSessionId(session.id); setIsSearchMode(false); }}
                   className={`w-full text-left py-2 px-3 rounded-lg flex items-center gap-3 mb-1 text-sm transition-colors pr-8 ${session.id === selectedSessionId ? 'bg-slate-200 dark:bg-slate-800 text-slate-900 dark:text-white' : 'hover:bg-slate-100 dark:hover:bg-slate-800/50 text-slate-600 dark:text-slate-400'}`}>
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 opacity-50 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" /></svg>
                   <span className="truncate">{session.title}</span>
                 </button>
 
-                {/* 3-Dots Menu Trigger - Only show for active chats (simplified) */}
-                {activeTab === 'active' && (
-                  <button
-                    onClick={(e) => { e.stopPropagation(); setActiveMenuSessionId(activeMenuSessionId === session.id ? null : session.id); }}
-                    className={`absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded-md opacity-0 group-hover:opacity-100 transition-opacity ${activeMenuSessionId === session.id ? 'opacity-100 bg-slate-200 dark:bg-slate-700' : 'hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-400'}`}
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" /></svg>
-                  </button>
-                )}
+                {/* 3-Dots Menu Trigger - Show for all chats */}
+                <button
+                  onClick={(e) => { e.stopPropagation(); setActiveMenuSessionId(activeMenuSessionId === session.id ? null : session.id); }}
+                  className={`absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded-md opacity-0 group-hover:opacity-100 transition-opacity ${activeMenuSessionId === session.id ? 'opacity-100 bg-slate-200 dark:bg-slate-700' : 'hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-400'}`}
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" /></svg>
+                </button>
 
                 {/* Dropdown Menu */}
                 {activeMenuSessionId === session.id && (
@@ -891,10 +957,17 @@ function App() {
                       <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
                       Rename
                     </button>
-                    <button onClick={(e) => archiveSession(e, session.id)} className="w-full text-left px-3 py-2 text-xs hover:bg-slate-100 dark:hover:bg-slate-700 flex items-center gap-2">
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" /></svg>
-                      Archive
-                    </button>
+                    {activeTab === 'active' ? (
+                      <button onClick={(e) => archiveSession(e, session.id)} className="w-full text-left px-3 py-2 text-xs hover:bg-slate-100 dark:hover:bg-slate-700 flex items-center gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" /></svg>
+                        Archive
+                      </button>
+                    ) : (
+                      <button onClick={(e) => unarchiveSession(e, session.id)} className="w-full text-left px-3 py-2 text-xs hover:bg-slate-100 dark:hover:bg-slate-700 flex items-center gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" /></svg>
+                        Unarchive
+                      </button>
+                    )}
                     <button onClick={(e) => openDeleteConfirmation(e, session.id, session.title)} className="w-full text-left px-3 py-2 text-xs hover:bg-red-50 dark:hover:bg-red-900/20 text-red-600 dark:text-red-400 flex items-center gap-2">
                       <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
                       Delete
@@ -926,7 +999,9 @@ function App() {
             <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500">
               <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" /></svg>
             </button>
-            <span className="text-lg font-bold text-slate-800 dark:text-slate-200">ATCO Genie</span>
+            <button onClick={() => startNewChat()} className="text-lg font-bold text-slate-800 dark:text-slate-200 cursor-pointer">
+              ATCO Genie
+            </button>
           </div>
 
           <button onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500">
@@ -937,60 +1012,126 @@ function App() {
         {/* Chat Area */}
         <main className="flex-1 flex flex-col overflow-hidden relative w-full max-w-5xl mx-auto">
           <div ref={messageContainerRef} className="flex-1 overflow-y-auto px-4 py-6 scroll-smooth">
-            {/* Welcome Message for New/Empty Chats */}
-            {currentChatMessages.length === 0 && !isBotTyping && (
-              <div className="flex flex-col items-center justify-center h-full text-center relative">
-                {/* Large Floating Genie Silhouette - Full Screen Effect */}
-                <div className="absolute inset-0 flex items-center justify-center pointer-events-none overflow-hidden pt-20">
-                  {/* Light mode genie */}
-                  <img
-                    src="/genie-character.png"
-                    alt="ATCO Genie"
-                    className="w-[400px] h-auto floating-genie opacity-20 dark:hidden"
-                  />
-                  {/* Dark mode genie */}
-                  <img
-                    src="/dark mode-removedbg.png"
-                    alt="ATCO Genie"
-                    className="w-[400px] h-auto floating-genie opacity-20 hidden dark:block"
-                  />
+
+            {/* Search Mode Panel - Gemini Style */}
+            {isSearchMode ? (
+              <div className="flex flex-col h-full">
+                {/* Search Header */}
+                <div className="flex items-center gap-4 mb-6">
+                  <button
+                    onClick={() => setIsSearchMode(false)}
+                    className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+                    </svg>
+                  </button>
+                  <h1 className="text-2xl font-bold text-slate-800 dark:text-white">Search</h1>
                 </div>
 
-                {/* Content on top of background genie */}
-                <div className="relative z-10 flex flex-col items-center">
-                  <h2 className="text-3xl font-bold text-black dark:text-white mb-3">
-                    How can I help you today?
-                  </h2>
-                  <p className="text-slate-500 dark:text-slate-400 max-w-lg text-lg">
-                    I'm your AI assistant for ATCO data. Ask me anything about employees, financials, reports, or analytics.
-                  </p>
-
-                  {/* Suggestion Chips */}
-                  <div className="flex flex-wrap gap-2 mt-6 justify-center max-w-xl">
-                    <button
-                      onClick={() => setCurrentUserInput("Show me the employee count by department")}
-                      className="px-4 py-2 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-full text-sm hover:bg-blue-500 hover:text-white transition-colors"
-                    >
-                      📊 Employee count by department
-                    </button>
-                    <button
-                      onClick={() => setCurrentUserInput("What are the top 5 highest paid employees?")}
-                      className="px-4 py-2 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-full text-sm hover:bg-blue-500 hover:text-white transition-colors"
-                    >
-                      💰 Top 5 highest paid
-                    </button>
-                    <button
-                      onClick={() => setCurrentUserInput("Generate a summary report for this month")}
-                      className="px-4 py-2 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-full text-sm hover:bg-blue-500 hover:text-white transition-colors"
-                    >
-                      📝 Monthly summary
-                    </button>
+                {/* Search Input */}
+                <div className="mb-6">
+                  <div className="relative">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                    </svg>
+                    <input
+                      type="text"
+                      placeholder="Search for chats"
+                      value={chatSearchTerm}
+                      onChange={(e) => handleSearch(e.target.value)}
+                      autoFocus
+                      className="w-full bg-slate-50 dark:bg-slate-800 border-2 border-slate-200 dark:border-slate-700 rounded-full pl-12 pr-4 py-3 text-slate-700 dark:text-slate-200 placeholder-slate-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 focus:outline-none transition-colors"
+                    />
                   </div>
                 </div>
+
+                {/* Search Results */}
+                <div className="flex-1 overflow-y-auto">
+                  <p className="text-sm font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-3">
+                    {chatSearchTerm ? `Results for "${chatSearchTerm}"` : 'Recent'}
+                  </p>
+
+                  {(chatSearchTerm ? searchResults : chatHistory).length === 0 ? (
+                    <div className="text-center py-12 text-slate-400">
+                      {chatSearchTerm ? 'No matching conversations found' : 'No conversations yet'}
+                    </div>
+                  ) : (
+                    <div className="space-y-1">
+                      {(chatSearchTerm ? searchResults : chatHistory).map(session => (
+                        <button
+                          key={session.id}
+                          onClick={() => selectSearchResult(session.id)}
+                          className="w-full flex items-center justify-between p-4 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors text-left group"
+                        >
+                          <span className="text-slate-700 dark:text-slate-300 truncate pr-4 flex-1">
+                            {session.title}
+                          </span>
+                          <span className="text-sm text-slate-400 dark:text-slate-500 whitespace-nowrap">
+                            {formatSearchDate(session.lastActiveAt || session.createdAt || new Date().toISOString())}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
+            ) : (
+              /* Welcome Message for New/Empty Chats */
+              currentChatMessages.length === 0 && !isBotTyping && (
+                <div className="flex flex-col items-center justify-center h-full text-center relative">
+                  {/* Large Floating Genie Silhouette - Full Screen Effect */}
+                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none overflow-hidden pt-20">
+                    {/* Light mode genie */}
+                    <img
+                      src="/genie-character.png"
+                      alt="ATCO Genie"
+                      className="w-[400px] h-auto floating-genie opacity-20 dark:hidden"
+                    />
+                    {/* Dark mode genie */}
+                    <img
+                      src="/dark mode-removedbg.png"
+                      alt="ATCO Genie"
+                      className="w-[400px] h-auto floating-genie opacity-20 hidden dark:block"
+                    />
+                  </div>
+
+                  {/* Content on top of background genie */}
+                  <div className="relative z-10 flex flex-col items-center">
+                    <h2 className="text-3xl font-bold text-black dark:text-white mb-3">
+                      How can I help you today?
+                    </h2>
+                    <p className="text-slate-500 dark:text-slate-400 max-w-lg text-lg">
+                      I'm your AI assistant for ATCO data. Ask me anything about employees, financials, reports, or analytics.
+                    </p>
+
+                    {/* Suggestion Chips */}
+                    <div className="flex flex-wrap gap-2 mt-6 justify-center max-w-xl">
+                      <button
+                        onClick={() => setCurrentUserInput("Show me the employee count by department")}
+                        className="px-4 py-2 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-full text-sm hover:bg-blue-500 hover:text-white transition-colors"
+                      >
+                        📊 Employee count by department
+                      </button>
+                      <button
+                        onClick={() => setCurrentUserInput("What are the top 5 highest paid employees?")}
+                        className="px-4 py-2 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-full text-sm hover:bg-blue-500 hover:text-white transition-colors"
+                      >
+                        💰 Top 5 highest paid
+                      </button>
+                      <button
+                        onClick={() => setCurrentUserInput("Generate a summary report for this month")}
+                        className="px-4 py-2 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-full text-sm hover:bg-blue-500 hover:text-white transition-colors"
+                      >
+                        📝 Monthly summary
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )
             )}
 
-            {currentChatMessages.map(message => (
+            {!isSearchMode && currentChatMessages.map(message => (
               <div key={message.id} className={`flex gap-4 mb-6 ${message.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
                 {message.sender === 'bot' && (
                   <div className="w-8 h-8 rounded-full bg-white border border-slate-100 flex items-center justify-center flex-shrink-0 shadow-sm overflow-hidden p-1">
@@ -1075,12 +1216,12 @@ function App() {
 
                   {/* Model Selector */}
                   <div className="relative">
-                    <button type="button" onClick={() => { setIsModelSelectorOpen(!isModelSelectorOpen); setIsCompanySelectorOpen(false); }} className="flex items-center gap-1.5 px-2 py-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-sm font-medium text-slate-600 dark:text-slate-300 transition-colors">
+                    <button type="button" onClick={(e) => { e.stopPropagation(); setIsModelSelectorOpen(!isModelSelectorOpen); setIsCompanySelectorOpen(false); }} className="flex items-center gap-1.5 px-2 py-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-sm font-medium text-slate-600 dark:text-slate-300 transition-colors">
                       {currentModel.name}
                       <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
                     </button>
                     {isModelSelectorOpen && (
-                      <div className="absolute bottom-full mb-2 left-0 w-48 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl z-20 py-1 overflow-hidden">
+                      <div onClick={(e) => e.stopPropagation()} className="absolute bottom-full mb-2 left-0 w-48 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl z-20 py-1 overflow-hidden">
                         {availableModels.map(model => (
                           <button key={model.id} type="button" onClick={() => handleModelSelect(model.id)} className={`w-full text-left px-3 py-2 text-sm hover:bg-slate-100 dark:hover:bg-slate-700 ${currentModel.id === model.id ? 'text-blue-600 font-medium' : 'text-slate-700 dark:text-slate-300'}`}>
                             {model.name}
@@ -1168,6 +1309,31 @@ function App() {
                 Delete
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Archived Chat Warning Modal */}
+      {showArchivedWarning && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-xl max-w-sm w-full p-6">
+            <div className="text-center mb-4">
+              <div className="w-12 h-12 rounded-full bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center mx-auto mb-3">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-amber-600 dark:text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
+                </svg>
+              </div>
+              <h3 className="text-lg font-semibold text-slate-800 dark:text-white mb-2">Chat is Archived</h3>
+              <p className="text-sm text-slate-500 dark:text-slate-400">
+                Unarchive the chat to continue chatting
+              </p>
+            </div>
+            <button
+              onClick={() => setShowArchivedWarning(false)}
+              className="w-full px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white transition-colors font-medium"
+            >
+              OK
+            </button>
           </div>
         </div>
       )}
