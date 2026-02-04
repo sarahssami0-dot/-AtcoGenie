@@ -45,6 +45,7 @@ declare global {
   interface Window {
     SpeechRecognition: any;
     webkitSpeechRecognition: any;
+    AtcoGenieCopyTable: (tableId: string) => void;
   }
 }
 
@@ -107,6 +108,7 @@ function App() {
 
   // Copy Button Feedback State
   const [copiedMessageId, setCopiedMessageId] = useState<number | null>(null);
+  const [copyToast, setCopyToast] = useState<{ show: boolean; message: string }>({ show: false, message: '' });
 
   // Archived Chat Warning Modal
   const [showArchivedWarning, setShowArchivedWarning] = useState(false);
@@ -409,15 +411,153 @@ function App() {
     return div.innerHTML;
   };
 
-  // Helper: Copy message to clipboard
-  const copyMessageToClipboard = (messageId: number, text: string) => {
-    // Strip HTML tags for plain text copy
-    const plainText = text.replace(/<[^>]*>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
-    navigator.clipboard.writeText(plainText).then(() => {
-      setCopiedMessageId(messageId);
-      setTimeout(() => setCopiedMessageId(null), 2000);
-    });
+  // Helper: Show copy toast notification
+  const showCopyToast = (message: string) => {
+    setCopyToast({ show: true, message });
+    setTimeout(() => setCopyToast({ show: false, message: '' }), 2000);
   };
+
+  // Helper: Copy text to clipboard with fallback for HTTP
+  const copyToClipboard = async (text: string): Promise<boolean> => {
+    // Try modern clipboard API first (requires HTTPS)
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return true;
+      } catch {
+        // Fall through to fallback
+      }
+    }
+
+    // Fallback for HTTP: use textarea + execCommand
+    try {
+      const textArea = document.createElement('textarea');
+      textArea.value = text;
+      textArea.style.position = 'fixed';
+      textArea.style.left = '-9999px';
+      textArea.style.top = '-9999px';
+      document.body.appendChild(textArea);
+      textArea.focus();
+      textArea.select();
+      const successful = document.execCommand('copy');
+      document.body.removeChild(textArea);
+      return successful;
+    } catch {
+      return false;
+    }
+  };
+
+  // Helper: Copy rich HTML to clipboard (for tables with formatting)
+  const copyHtmlToClipboard = async (html: string, plainText: string): Promise<boolean> => {
+    // Try ClipboardItem API for rich content (requires HTTPS)
+    if (navigator.clipboard && typeof ClipboardItem !== 'undefined') {
+      try {
+        const htmlBlob = new Blob([html], { type: 'text/html' });
+        const textBlob = new Blob([plainText], { type: 'text/plain' });
+        const clipboardItem = new ClipboardItem({
+          'text/html': htmlBlob,
+          'text/plain': textBlob
+        });
+        await navigator.clipboard.write([clipboardItem]);
+        return true;
+      } catch {
+        // Fall through to fallback
+      }
+    }
+
+    // Fallback: Use a temporary editable div for rich copy
+    try {
+      const container = document.createElement('div');
+      container.innerHTML = html;
+      container.style.position = 'fixed';
+      container.style.left = '-9999px';
+      container.style.top = '-9999px';
+      container.setAttribute('contenteditable', 'true');
+      document.body.appendChild(container);
+
+      const range = document.createRange();
+      range.selectNodeContents(container);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+
+      const successful = document.execCommand('copy');
+
+      selection?.removeAllRanges();
+      document.body.removeChild(container);
+      return successful;
+    } catch {
+      // Last resort: plain text
+      return copyToClipboard(plainText);
+    }
+  };
+
+  // Helper: Copy message to clipboard (with HTML formatting)
+  const copyMessageToClipboard = async (messageId: number, text: string) => {
+    // Get plain text version
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = text;
+    const plainText = tempDiv.innerText || tempDiv.textContent || '';
+
+    // Copy as rich HTML to preserve formatting
+    const success = await copyHtmlToClipboard(text, plainText);
+    if (success) {
+      setCopiedMessageId(messageId);
+      showCopyToast('Copied to clipboard!');
+      setTimeout(() => setCopiedMessageId(null), 2000);
+    } else {
+      showCopyToast('Failed to copy');
+    }
+  };
+
+  // Helper: Copy table by ID (invoked from inline HTML button)
+  const copyTableById = async (tableId: string) => {
+    const table = document.getElementById(tableId) as HTMLTableElement;
+    if (!table) return;
+
+    // Create styled HTML table for rich copy
+    const styledTable = table.cloneNode(true) as HTMLTableElement;
+    styledTable.style.borderCollapse = 'collapse';
+    styledTable.style.border = '1px solid #ccc';
+    styledTable.querySelectorAll('th, td').forEach(cell => {
+      (cell as HTMLElement).style.border = '1px solid #ccc';
+      (cell as HTMLElement).style.padding = '8px';
+    });
+    styledTable.querySelectorAll('th').forEach(th => {
+      (th as HTMLElement).style.backgroundColor = '#f5f5f5';
+      (th as HTMLElement).style.fontWeight = 'bold';
+    });
+
+    // Create plain text version (tab-separated for Excel)
+    const rows = table.querySelectorAll('tr');
+    const formattedRows: string[] = [];
+    rows.forEach(row => {
+      const cells = row.querySelectorAll('th, td');
+      const cellTexts: string[] = [];
+      cells.forEach(cell => {
+        cellTexts.push((cell.textContent || '').trim());
+      });
+      formattedRows.push(cellTexts.join('\t'));
+    });
+    const plainText = formattedRows.join('\n');
+
+    // Copy as rich HTML
+    const success = await copyHtmlToClipboard(styledTable.outerHTML, plainText);
+    if (success) {
+      showCopyToast('Table copied to clipboard!');
+    } else {
+      showCopyToast('Failed to copy table');
+    }
+  };
+
+  // Register global function for inline copy buttons
+  useEffect(() => {
+    window.AtcoGenieCopyTable = copyTableById;
+    return () => {
+      // @ts-ignore
+      delete window.AtcoGenieCopyTable;
+    };
+  }, []);
 
   // Helper: Convert Markdown table to HTML (simplified - no complex inline JS)
   const parseMarkdownTable = (tableText: string): string => {
@@ -427,23 +567,34 @@ function App() {
     const headerCells = lines[0].split('|').map(cell => cell.trim()).filter(Boolean);
     const rows = lines.slice(2).filter(line => line.includes('|'));
 
+    // Generate unique ID for this table
+    const tableId = 'table-' + Math.random().toString(36).substr(2, 9);
+
     let tableHtml = `
-      <div class="my-4 overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700 shadow-sm">
-        <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700">
-          <thead class="bg-slate-100 dark:bg-slate-800">
-            <tr>
-              ${headerCells.map(cell => `<th class="px-4 py-3 text-left text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider">${escapeHtml(cell)}</th>`).join('')}
-            </tr>
-          </thead>
-          <tbody class="bg-white dark:bg-slate-900 divide-y divide-slate-100 dark:divide-slate-800">
-            ${rows.map(row => {
+      <div class="my-4 rounded-lg border border-slate-200 dark:border-slate-700 shadow-sm">
+        <div class="flex justify-end p-2 bg-slate-50 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700">
+          <button onclick="window.AtcoGenieCopyTable('${tableId}')" class="text-xs flex items-center gap-1 text-slate-500 hover:text-blue-600 dark:text-slate-400 dark:hover:text-blue-400 transition-colors">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+            Copy Table
+          </button>
+        </div>
+        <div class="overflow-x-auto">
+          <table id="${tableId}" class="min-w-full divide-y divide-slate-200 dark:divide-slate-700">
+            <thead class="bg-slate-100 dark:bg-slate-800">
+              <tr>
+                ${headerCells.map(cell => `<th class="px-4 py-3 text-left text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider">${escapeHtml(cell)}</th>`).join('')}
+              </tr>
+            </thead>
+            <tbody class="bg-white dark:bg-slate-900 divide-y divide-slate-100 dark:divide-slate-800">
+              ${rows.map(row => {
       const cells = row.split('|').map(cell => cell.trim()).filter(Boolean);
       return `<tr class="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
-                ${cells.map(cell => `<td class="px-4 py-3 text-sm text-slate-700 dark:text-slate-300">${escapeHtml(cell)}</td>`).join('')}
-              </tr>`;
+                  ${cells.map(cell => `<td class="px-4 py-3 text-sm text-slate-700 dark:text-slate-300">${escapeHtml(cell)}</td>`).join('')}
+                </tr>`;
     }).join('')}
-          </tbody>
-        </table>
+            </tbody>
+          </table>
+        </div>
       </div>
     `;
 
@@ -1150,26 +1301,20 @@ function App() {
                       {typingMessageId === message.id && (
                         <span className="inline-block w-1 h-4 bg-blue-500 ml-1 animate-pulse"></span>
                       )}
-                      {/* Copy Button with Feedback */}
-                      <div className="absolute -bottom-7 left-0 opacity-0 group-hover:opacity-100 transition-opacity flex gap-2 pt-1">
+                      {/* Copy Response Button - Below content */}
+                      <div className="flex justify-start mt-3 opacity-0 group-hover:opacity-100 transition-opacity">
                         <button
                           onClick={() => copyMessageToClipboard(message.id, message.text)}
-                          className={`px-2 py-1 text-xs rounded-md shadow-sm border transition-all flex items-center gap-1 ${copiedMessageId === message.id
-                            ? 'bg-green-50 dark:bg-green-900/30 text-green-600 dark:text-green-400 border-green-200 dark:border-green-800'
-                            : 'bg-white dark:bg-slate-900 text-slate-400 hover:text-blue-500 border-slate-100 dark:border-slate-800'
+                          className={`p-2 rounded-lg shadow-sm border transition-all ${copiedMessageId === message.id
+                            ? 'bg-green-50 dark:bg-green-900/30 text-green-600 dark:text-green-400 border-green-200 dark:border-green-700'
+                            : 'bg-white dark:bg-slate-800 text-slate-400 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 border-slate-200 dark:border-slate-700'
                             }`}
                           title="Copy Response"
                         >
                           {copiedMessageId === message.id ? (
-                            <>
-                              <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
-                              Copied!
-                            </>
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
                           ) : (
-                            <>
-                              <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" /></svg>
-                              Copy
-                            </>
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
                           )}
                         </button>
                       </div>
@@ -1334,6 +1479,18 @@ function App() {
             >
               OK
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Copy Toast Notification */}
+      {copyToast.show && (
+        <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-50 animate-in fade-in slide-in-from-bottom-4 duration-300">
+          <div className="bg-slate-900 dark:bg-slate-700 text-white px-6 py-3 rounded-xl shadow-2xl flex items-center gap-3">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+            </svg>
+            <span className="font-medium">{copyToast.message}</span>
           </div>
         </div>
       )}
