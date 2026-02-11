@@ -11,15 +11,16 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddDbContext<ImdDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("ImdConnection")));
 
-// PRODUCTION: Use PostgreSQL for Chat History (Persistent) - ENABLED
+// Chat History & Folders: PostgreSQL (Persistent)
 builder.Services.AddDbContext<AtcoGenie.Server.Infrastructure.Data.GenieDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("ImdConnection"))); // Re-using IMD DB for chat persistence
+    options.UseNpgsql(builder.Configuration.GetConnectionString("GenieConnection")));
 
 // DEV ONLY: InMemory Database (Chats lost on restart) - DISABLED
 // builder.Services.AddDbContext<AtcoGenie.Server.Infrastructure.Data.GenieDbContext>(options =>
 //     options.UseInMemoryDatabase("GenieChats"));
 
 builder.Services.AddScoped<AtcoGenie.Server.Application.Services.IChatHistoryService, AtcoGenie.Server.Application.Services.ChatHistoryService>();
+builder.Services.AddScoped<AtcoGenie.Server.Application.Services.IFolderService, AtcoGenie.Server.Application.Services.FolderService>();
 
 builder.Services.AddApplicationServices();
 
@@ -79,6 +80,16 @@ var summaries = new[]
     "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
 };
 
+// MANUAL SYNC TRIGGER: Forces the IdentitySyncService to run immediately
+app.MapGet("/api/sync/trigger", async (IEnumerable<IHostedService> hostedServices, CancellationToken ct) =>
+{
+    var syncService = hostedServices.OfType<AtcoGenie.Server.Services.IdentitySyncService>().FirstOrDefault();
+    if (syncService == null) return Results.NotFound("Sync Service not registered.");
+
+    await syncService.SyncIdentitiesAsync(ct);
+    return Results.Ok(new { Message = "Identity Sync triggered successfully at " + DateTime.Now.ToString() });
+});
+
 app.MapGet("/weatherforecast", () =>
 {
     var forecast =  Enumerable.Range(1, 5).Select(index =>
@@ -114,7 +125,37 @@ app.MapGet("/api/whoami", (HttpContext context) =>
     };
     
     return info;
-}); 
+})
+.AllowAnonymous(); 
+
+// DIAGNOSTIC: Test AI Connection (Returns raw Google API error)
+app.MapGet("/api/test-ai-connection", async (AtcoGenie.Server.Application.Services.IGeminiService gemini, CancellationToken ct) =>
+{
+    var testRequest = new AtcoGenie.Server.Application.Services.GeminiRequest
+    {
+        Contents = new List<AtcoGenie.Server.Application.Services.GeminiContent>
+        {
+            new AtcoGenie.Server.Application.Services.GeminiContent 
+            { 
+                Role = "user", 
+                Parts = new List<AtcoGenie.Server.Application.Services.GeminiPart> { new AtcoGenie.Server.Application.Services.GeminiPart { Text = "Ping" } } 
+            }
+        }
+    };
+    
+    var response = await gemini.GenerateContentAsync(testRequest, ct);
+    
+    return new
+    {
+        Success = response.Success,
+        Result = response.Text,
+        Error = response.Error,
+        FinishReason = response.FinishReason,
+        Diagnosis = response.Success && !response.Text!.Contains("Demo Mode") 
+            ? "✅ AI is connected and working!" 
+            : "❌ AI is disconnected. Check VM Firewall or API Key."
+    };
+}).AllowAnonymous();
 
 // MODULE 2 TEST: Orchestration + Session Context + Partial Failure Handling
 app.MapGet("/api/test-orchestration", async (AtcoGenie.Server.Application.Services.OrchestrationService orchestrator) =>
@@ -245,10 +286,103 @@ app.MapDelete("/api/chats/{id}", async (int id, AtcoGenie.Server.Application.Ser
     return Results.Ok();
 });
 
+// ===== FOLDER MANAGEMENT API =====
+
+// GET: Retrieve all folders for current user
+app.MapGet("/api/folders", async (AtcoGenie.Server.Application.Services.IFolderService folderService, HttpContext context) =>
+{
+    var userId = context.User.FindFirst("Genie:HcmsId")?.Value 
+                 ?? context.User.Identity?.Name 
+                 ?? "Anonymous";
+                 
+    return Results.Ok(await folderService.GetUserFoldersAsync(userId));
+});
+
+// POST: Create new folder
+app.MapPost("/api/folders", async (AtcoGenie.Server.Application.DTOs.FolderDto request, AtcoGenie.Server.Application.Services.IFolderService folderService, HttpContext context) =>
+{
+    var userId = context.User.FindFirst("Genie:HcmsId")?.Value 
+                 ?? context.User.Identity?.Name 
+                 ?? "Anonymous";
+    
+    try
+    {
+        var folder = await folderService.CreateFolderAsync(userId, request.Name);
+        return Results.Created($"/api/folders/{folder.Id}", folder);
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+});
+
+// PUT: Rename folder
+app.MapPut("/api/folders/{id}/rename", async (int id, string name, AtcoGenie.Server.Application.Services.IFolderService folderService) =>
+{
+    try
+    {
+        var folder = await folderService.RenameFolderAsync(id, name);
+        return Results.Ok(folder);
+    }
+    catch (KeyNotFoundException)
+    {
+        return Results.NotFound();
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+});
+
+// DELETE: Delete folder (does NOT delete chats)
+app.MapDelete("/api/folders/{id}", async (int id, AtcoGenie.Server.Application.Services.IFolderService folderService) =>
+{
+    try
+    {
+        await folderService.DeleteFolderAsync(id);
+        return Results.Ok();
+    }
+    catch (KeyNotFoundException)
+    {
+        return Results.NotFound();
+    }
+});
+
+// POST: Add chat to folder (drag-and-drop)
+app.MapPost("/api/folders/{folderId}/chats/{chatId}", async (int folderId, int chatId, AtcoGenie.Server.Application.Services.IFolderService folderService) =>
+{
+    try
+    {
+        await folderService.AddChatToFolderAsync(folderId, chatId);
+        return Results.Ok();
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+});
+
+// DELETE: Remove chat from folder (does NOT delete chat)
+app.MapDelete("/api/folders/{folderId}/chats/{chatId}", async (int folderId, int chatId, AtcoGenie.Server.Application.Services.IFolderService folderService) =>
+{
+    await folderService.RemoveChatFromFolderAsync(folderId, chatId);
+    return Results.Ok();
+});
+
+// GET: Get all chats in a folder
+app.MapGet("/api/folders/{id}/chats", async (int id, AtcoGenie.Server.Application.Services.IFolderService folderService) =>
+{
+    var chats = await folderService.GetFolderChatsAsync(id);
+    return Results.Ok(chats);
+});
+
+
 // Initialize Database
 using (var scope = app.Services.CreateScope())
 {
     var services = scope.ServiceProvider;
+    var logger = services.GetRequiredService<ILogger<Program>>();
+    
     try
     {
         var context = services.GetRequiredService<ImdDbContext>();
@@ -256,18 +390,29 @@ using (var scope = app.Services.CreateScope())
         // Note: In production, use Migrations instead
         context.Database.EnsureCreated();
         
-        var logger = services.GetRequiredService<ILogger<Program>>();
         logger.LogInformation("IMD Database initialized successfully.");
     }
     catch (Exception ex)
     {
-        var logger = services.GetRequiredService<ILogger<Program>>();
         logger.LogError(ex, "An error occurred creating the IMD database.");
+    }
+    
+    // Initialize Genie chat & folders database (optional - won't block app startup if DB unavailable)
+    try
+    {
+        var genieDb = services.GetRequiredService<AtcoGenie.Server.Infrastructure.Data.GenieDbContext>();
+        genieDb.Database.EnsureCreated(); // Creates tables if they don't exist
+        logger.LogInformation("Genie Database initialized successfully.");
+    }
+    catch (Exception ex)
+    {
+        logger.LogWarning(ex, "Genie Database initialization failed - folders feature will not work. Check GenieConnection in appsettings.json");
+        // Don't throw - allow app to start even if Genie DB is unavailable
     }
 }
 
 // SPA Fallback (Must be last)
-app.MapFallbackToFile("index.html");
+app.MapFallbackToFile("index.html").AllowAnonymous();
 
 app.Run();
 

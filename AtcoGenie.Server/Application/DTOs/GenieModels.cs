@@ -45,3 +45,23 @@ public class GenieMetadata
     public List<string>? SourcesFailed { get; set; }
     public double ExecutionTimeMs { get; set; }
 }
+
+// ===== Chat History & Folders DTOs =====
+
+public class ChatSessionDto
+{
+    public int Id { get; set; }
+    public string Title { get; set; } = string.Empty;
+    public DateTime LastActiveAt { get; set; }
+    public string Model { get; set; } = string.Empty;
+    public bool IsArchived { get; set; }
+}
+
+public class FolderDto
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public int ChatCount { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public List<ChatSessionDto>? Chats { get; set; } // Optional: for expansion
+}

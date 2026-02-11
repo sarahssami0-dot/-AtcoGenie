@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+﻿import React, { useState, useEffect, useRef } from 'react';
 import type { FormEvent } from 'react';
 
 // --- Type Definitions ---
@@ -37,6 +37,14 @@ interface Company {
   name: string;
 }
 
+interface Folder {
+  id: number;
+  name: string;
+  chatCount: number;
+  createdAt: string;
+  chats?: ChatSession[];
+}
+
 type Theme = 'light' | 'dark';
 type SidebarTab = 'active' | 'archived';
 
@@ -59,6 +67,7 @@ function App() {
   const [currentUserInput, setCurrentUserInput] = useState('');
   const [isBotTyping, setIsBotTyping] = useState(false);
   const [user, setUser] = useState<User>({ name: 'Loading...', role: 'User', avatar: '...' });
+  const [authStatus, setAuthStatus] = useState<'loading' | 'authenticated' | 'unauthenticated' | 'unauthorized'>('loading');
 
   // Fetch Real User
   useEffect(() => {
@@ -72,12 +81,24 @@ function App() {
 
           setUser({
             name: cleanName.replace('.', ' '), // "ali.ahmed" -> "ali ahmed"
-            role: data.hcmsEmployeeId !== "NOT FOUND" ? "Employee" : "Guest",
+            role: data.hcmsEmployeeId !== "NOT FOUND (Hydration Failed)" ? "Employee" : "Guest",
             avatar: initials
           });
+
+          // If HCMS ID is missing, they are unauthorized for the specific app features
+          if (data.hcmsEmployeeId === "NOT FOUND (Hydration Failed)") {
+            setAuthStatus('unauthorized');
+          } else {
+            setAuthStatus('authenticated');
+          }
+        } else {
+          setAuthStatus('unauthenticated');
         }
       })
-      .catch(e => console.error("Auth check failed", e));
+      .catch(e => {
+        console.error("Auth check failed", e);
+        setAuthStatus('unauthenticated');
+      });
   }, []);
 
   // UI State
@@ -89,6 +110,7 @@ function App() {
   const [isModelSelectorOpen, setIsModelSelectorOpen] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [activeMenuSessionId, setActiveMenuSessionId] = useState<number | null>(null);
+  const [menuPosition, setMenuPosition] = useState<{ top: number, left: number }>({ top: 0, left: 0 });
 
   // Typing Animation State
   const [typingMessageId, setTypingMessageId] = useState<number | null>(null);
@@ -99,12 +121,258 @@ function App() {
   const [showWelcome, setShowWelcome] = useState(true);
   const [welcomeFading, setWelcomeFading] = useState(false);
 
+  // --- Folders State ---
+  const [folders, setFolders] = useState<Folder[]>([]);
+  const [expandedFolderIds, setExpandedFolderIds] = useState<number[]>([]);
+  const [activeFolderMenuId, setActiveFolderMenuId] = useState<number | null>(null);
+  const [draggedChatId, setDraggedChatId] = useState<number | null>(null);
+  const [editingFolderId, setEditingFolderId] = useState<number | null>(null);
+  const [editingFolderName, setEditingFolderName] = useState<string>('');
+
+
+  // --- UI Improvements State ---
+  const [renamingSessionId, setRenamingSessionId] = useState<number | null>(null);
+  const [renamingSessionTitle, setRenamingSessionTitle] = useState('');
+  const [highlightTerm, setHighlightTerm] = useState('');
+
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // --- Landing Page Component ---
+  // --- Landing Page Component (Denial Screen) ---
+  const LandingPage = ({ userName }: { userName?: string }) => {
+    return (
+      <div className="min-h-screen bg-white dark:bg-slate-900 flex flex-col items-center justify-center relative overflow-hidden">
+        {/* Background Effects matching main app */}
+        <div className="absolute inset-0 bg-blue-50/30 dark:bg-transparent -z-10" />
+
+        {/* Large Floating Genie Silhouette - Matching Welcome Screen */}
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none overflow-hidden pt-20 opacity-10">
+          <img src="/genie-character.png" alt="" className="w-[400px] h-auto floating-genie dark:hidden" />
+          <img src="/dark mode-removedbg.png" alt="" className="w-[400px] h-auto floating-genie hidden dark:block" />
+        </div>
+
+        <div className="z-10 max-w-xl w-full px-6 flex flex-col items-center text-center">
+          {/* Logo */}
+          <div className="mb-8 p-4 bg-white dark:bg-slate-800 rounded-3xl shadow-xl border border-slate-100 dark:border-slate-700">
+            <img src="/genie-character-removedbg.png" alt="ATCO Genie" className="w-24 h-24 object-contain" />
+          </div>
+
+          <h1 className="text-4xl font-extrabold text-slate-900 dark:text-white mb-2 tracking-tight">
+            ATCO <span className="bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">Genie</span>
+          </h1>
+          <p className="text-slate-400 dark:text-slate-500 uppercase tracking-widest text-[10px] font-bold mb-10">Advanced Analytics Platform</p>
+
+          <div className="w-full bg-white/70 dark:bg-slate-800/50 backdrop-blur-xl border border-slate-200 dark:border-slate-700 rounded-3xl p-8 shadow-2xl relative">
+            <div className="w-16 h-16 bg-amber-100 dark:bg-amber-900/30 rounded-2xl flex items-center justify-center mx-auto mb-6">
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-amber-600 dark:text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+            </div>
+
+            <h2 className="text-xl font-bold text-slate-800 dark:text-slate-100 mb-4 whitespace-pre-wrap leading-relaxed">
+              You do not have access or are not registered in Active Directory
+            </h2>
+
+            <p className="text-slate-600 dark:text-slate-400 mb-8 leading-relaxed text-sm">
+              Contact <span className="font-bold text-blue-600 dark:text-blue-400">HR</span> for further details and resolution of your account status.
+            </p>
+
+            <div className="flex flex-col gap-3">
+              <button
+                onClick={() => window.location.reload()}
+                className="w-full py-3.5 bg-slate-900 dark:bg-white text-white dark:text-slate-900 rounded-xl font-bold hover:opacity-90 transition-all flex items-center justify-center gap-2 shadow-lg"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                Retry Sign In
+              </button>
+
+              {userName && (
+                <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-2">
+                  Inbound Identity: <span className="font-medium text-slate-600 dark:text-slate-300">{userName}</span>
+                </p>
+              )}
+            </div>
+          </div>
+
+          <p className="mt-12 text-[10px] text-slate-400 dark:text-slate-600 font-bold uppercase tracking-widest">
+            Powered by Advanced Analytics @ ATCO LAB
+          </p>
+        </div>
+      </div>
+    );
+  };
+
+
+
+  // --- Folders Logic ---
+  const fetchFolders = async () => {
+    try {
+      const res = await fetch('/api/folders');
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setFolders(data);
+        } else {
+          setFolders([]);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to fetch folders:', error);
+    }
+  };
+
+  useEffect(() => {
+    fetchFolders();
+  }, []);
+
+  const createFolder = async () => {
+    try {
+      // Auto-increment name to avoid duplicate errors
+      let folderName = 'New Folder';
+      const existingNames = folders.map(f => (f.name || '').toLowerCase());
+      if (existingNames.includes(folderName.toLowerCase())) {
+        let counter = 2;
+        while (existingNames.includes(`new folder ${counter}`.toLowerCase())) {
+          counter++;
+        }
+        folderName = `New Folder ${counter}`;
+      }
+
+      const res = await fetch('/api/folders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: folderName })
+      });
+      if (res.ok) {
+        const newFolder = await res.json();
+        await fetchFolders();
+        setEditingFolderId(newFolder.id);
+        setEditingFolderName(folderName);
+        setExpandedFolderIds(prev => [...prev, newFolder.id]);
+      } else {
+        const err = await res.json().catch(() => null);
+        console.error('Folder creation failed:', err);
+      }
+    } catch (error) {
+      console.error('Failed to create folder:', error);
+    }
+  };
+
+  const renameFolder = async () => {
+    if (!editingFolderId || !editingFolderName.trim()) return;
+    try {
+      await fetch(`/api/folders/${editingFolderId}/rename?name=${encodeURIComponent(editingFolderName)}`, {
+        method: 'PUT'
+      });
+      fetchFolders();
+    } catch (error) {
+      console.error('Failed to rename folder:', error);
+    }
+    setEditingFolderId(null);
+    setEditingFolderName('');
+  };
+
+  const openFolderDeleteConfirmation = (folderId: number, folderName: string) => {
+    setFolderDeleteModal({ isOpen: true, folderId, folderName });
+    setActiveFolderMenuId(null);
+  };
+
+  const deleteFolder = async () => {
+    if (!folderDeleteModal.folderId) return;
+    try {
+      const res = await fetch(`/api/folders/${folderDeleteModal.folderId}`, { method: 'DELETE' });
+      if (res.ok) {
+        fetchFolders();
+        setFolderDeleteModal({ isOpen: false, folderId: null, folderName: '' });
+      }
+    } catch (error) {
+      console.error('Failed to delete folder:', error);
+    }
+  };
+
+  const toggleFolderExpansion = (folderId: number) => {
+    setExpandedFolderIds(prev => prev.includes(folderId) ? prev.filter(id => id !== folderId) : [...prev, folderId]);
+  };
+
+  const removeChatFromFolder = async (chatId: number, folderId: number) => {
+    try {
+      const res = await fetch(`/api/folders/${folderId}/chats/${chatId}`, { method: 'DELETE' });
+      if (res.ok) fetchFolders();
+    } catch (error) {
+      console.error('Failed to remove chat from folder:', error);
+    }
+  };
+
+  const handleChatDragStart = (e: React.DragEvent, chatId: number) => {
+    e.dataTransfer.setData('chatId', chatId.toString());
+    e.dataTransfer.effectAllowed = 'move';
+    setDraggedChatId(chatId);
+  };
+
+  const handleFolderDrop = async (e: React.DragEvent, folderId: number) => {
+    e.preventDefault();
+    e.currentTarget.classList.remove('bg-blue-100', 'dark:bg-blue-900/30');
+    const chatId = parseInt(e.dataTransfer.getData('chatId'));
+    if (!chatId) return;
+
+    try {
+      const res = await fetch(`/api/folders/${folderId}/chats/${chatId}`, {
+        method: 'POST'
+      });
+      if (res.ok) {
+        await fetchFolders();
+      } else {
+        const errorText = await res.text();
+        console.error('Failed to add chat to folder:', res.status, errorText);
+        alert(`Failed to add chat to folder: ${res.status}`);
+      }
+    } catch (error) {
+      console.error('Failed to move chat to folder:', error);
+      alert('Network error: Failed to add chat to folder');
+    }
+    setDraggedChatId(null);
+  };
+
+  const handleFolderDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    e.currentTarget.classList.add('bg-blue-100', 'dark:bg-blue-900/30');
+  };
+
+  const handleFolderDragLeave = (e: React.DragEvent) => {
+    e.currentTarget.classList.remove('bg-blue-100', 'dark:bg-blue-900/30');
+  };
+
+  const filteredFolders = folders.filter(f => {
+    const term = chatSearchTerm.toLowerCase();
+    if (!term) return true;
+    return (f.name || '').toLowerCase().includes(term) ||
+      (f.chats || []).some(c => (c.title || '').toLowerCase().includes(term));
+  });
+
+  const submitRename = async () => {
+    if (!renamingSessionId || !renamingSessionTitle.trim()) return;
+    setChatHistory(prev => prev.map(s => s.id === renamingSessionId ? { ...s, title: renamingSessionTitle } : s));
+    setFolders(prev => prev.map(f => ({ ...f, chats: (f.chats || []).map(s => s.id === renamingSessionId ? { ...s, title: renamingSessionTitle } : s) })));
+
+    try {
+      await fetch(`/api/chats/${renamingSessionId}/rename?title=${encodeURIComponent(renamingSessionTitle)}`, { method: 'PUT' });
+    } catch (e) { console.error('Rename failed', e); }
+
+    setRenamingSessionId(null);
+    setRenamingSessionTitle('');
+  };
+
   // Company Selector State
   const [isCompanySelectorOpen, setIsCompanySelectorOpen] = useState(false);
   const [selectedCompanyIds, setSelectedCompanyIds] = useState<number[]>([1, 3]);
 
   // Delete Confirmation Modal State
   const [deleteConfirmModal, setDeleteConfirmModal] = useState<{ isOpen: boolean, sessionId: number | null, sessionTitle: string }>({ isOpen: false, sessionId: null, sessionTitle: '' });
+  const [folderDeleteModal, setFolderDeleteModal] = useState<{ isOpen: boolean, folderId: number | null, folderName: string }>({ isOpen: false, folderId: null, folderName: '' });
+
+  // Search highlighting state
+  const [searchHighlight, setSearchHighlight] = useState<string>('');
 
   // Copy Button Feedback State
   const [copiedMessageId, setCopiedMessageId] = useState<number | null>(null);
@@ -204,7 +472,7 @@ function App() {
     .sort((a, b) => a.id - b.id); // Assuming ID order is chronological
 
   const filteredChatHistory = chatHistory.filter(session =>
-    session.title.toLowerCase().includes(chatSearchTerm.toLowerCase())
+    (session.title || '').toLowerCase().includes(chatSearchTerm.toLowerCase())
   );
 
   const selectedCompaniesText = () => {
@@ -324,14 +592,8 @@ function App() {
     e.stopPropagation();
     const session = chatHistory.find(c => c.id === id);
     if (!session) return;
-
-    const newTitle = prompt("Rename chat:", session.title);
-    if (newTitle) {
-      try {
-        await fetch(`/api/chats/${id}/rename?title=${encodeURIComponent(newTitle)}`, { method: 'PUT' });
-        setChatHistory(prev => prev.map(c => c.id === id ? { ...c, title: newTitle } : c));
-      } catch (e) { console.error("Failed to rename", e); }
-    }
+    setRenamingSessionId(id);
+    setRenamingSessionTitle(session.title);
     setActiveMenuSessionId(null);
   };
 
@@ -360,9 +622,10 @@ function App() {
   };
 
   // Exit search mode and load a conversation
-  const selectSearchResult = (sessionId: number) => {
+  const selectSearchResult = (sessionId: number, highlight?: string) => {
     setIsSearchMode(false);
     setSelectedSessionId(sessionId);
+    setSearchHighlight(highlight || chatSearchTerm);
     setChatSearchTerm('');
     setSearchResults([]);
   };
@@ -378,6 +641,27 @@ function App() {
     if (date.toDateString() === yesterday.toDateString()) return 'Yesterday';
     return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   };
+
+  // Highlight search term in text
+  const highlightText = (text: string, searchTerm: string): string => {
+    if (!searchTerm || !text) return text;
+    const regex = new RegExp(`(${searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+    return text.replace(regex, '<mark class="bg-yellow-200 dark:bg-yellow-600/40 px-0.5 rounded">$1</mark>');
+  };
+
+  // Auto-scroll to highlighted message when opening from search
+  useEffect(() => {
+    if (searchHighlight && currentChatMessages.length > 0) {
+      setTimeout(() => {
+        const highlightedElement = document.querySelector('mark');
+        if (highlightedElement) {
+          highlightedElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+        // Clear highlight after scrolling
+        setTimeout(() => setSearchHighlight(''), 2000);
+      }, 500);
+    }
+  }, [searchHighlight, currentChatMessages]);
 
   // --- UI Actions ---
 
@@ -864,6 +1148,30 @@ function App() {
     }
   };
 
+  // --- Conditional Rendering for Auth ---
+  // Moved here to follow Rules of Hooks (No conditional returns before hooks)
+  if (authStatus === 'loading') {
+    return (
+      <div className="min-h-screen bg-slate-50 dark:bg-slate-900 flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-16 h-16 relative">
+            <div className="absolute inset-0 border-4 border-blue-200 dark:border-slate-800 rounded-full"></div>
+            <div className="absolute inset-0 border-4 border-blue-600 rounded-full border-t-transparent animate-spin"></div>
+          </div>
+          <p className="text-slate-500 dark:text-slate-400 font-medium animate-pulse tabular-nums">Verifying credentials...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (authStatus === 'unauthenticated') {
+    return <LandingPage />;
+  }
+
+  if (authStatus === 'unauthorized') {
+    return <LandingPage userName={user.name} />;
+  }
+
   return (
     <div
       className="flex h-screen font-sans text-slate-800 dark:text-slate-300 bg-white dark:bg-slate-900 overflow-hidden"
@@ -1029,30 +1337,23 @@ function App() {
           <img src="/ChatGPT Image Jan 29, 2026, 09_48_19 AM.png" alt="ATCO Genie" className="h-16 object-contain hidden dark:block" />
         </header>
 
-        {/* Company Selector */}
-        <div className="px-4 pb-2">
-          <div className="relative">
-            <button onClick={(e) => { e.stopPropagation(); setIsCompanySelectorOpen(!isCompanySelectorOpen); }} className="w-full flex items-center justify-between p-2 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:border-blue-400 transition-colors">
-              <span className="text-sm font-medium text-slate-700 dark:text-slate-200 truncate">{selectedCompaniesText()}</span>
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
-            </button>
-            {isCompanySelectorOpen && (
-              <div className="absolute top-full left-0 right-0 mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg z-20 max-h-48 overflow-y-auto">
-                {availableCompanies.map(company => (
-                  <div key={company.id} onClick={(e) => { e.stopPropagation(); toggleCompanySelection(company.id); }} className="flex items-center gap-2 p-2 hover:bg-slate-100 dark:hover:bg-slate-700 cursor-pointer">
-                    <div className={`w-4 h-4 rounded border flex items-center justify-center ${selectedCompanyIds.includes(company.id) ? 'bg-blue-600 border-blue-600' : 'border-slate-300 dark:border-slate-600'}`}>
-                      {selectedCompanyIds.includes(company.id) && <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 text-white" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" /></svg>}
-                    </div>
-                    <span className="text-sm text-slate-700 dark:text-slate-300">{company.name}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+        {/* Action Row: New Chat + Search */}
+        <div className="px-4 pb-3 flex gap-2">
+          <button onClick={startNewChat} className="flex-1 flex items-center justify-center gap-2 py-2 rounded-lg bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 font-medium text-sm hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+            New Chat
+          </button>
+          <button
+            onClick={openSearchMode}
+            title="Search conversations"
+            className="p-2 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-blue-50 dark:hover:bg-blue-900/20 text-slate-500 hover:text-blue-600 transition-colors"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+          </button>
         </div>
 
         {/* Tab Switcher */}
-        <div className="px-4 pb-2 pt-2 flex gap-2">
+        <div className="px-4 pb-2 flex gap-2">
           <button
             onClick={() => setActiveTab('active')}
             className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-colors ${activeTab === 'active' ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800'}`}
@@ -1067,35 +1368,191 @@ function App() {
           </button>
         </div>
 
-        <div className="px-4 pb-4">
-          <button onClick={startNewChat} className="w-full flex items-center gap-3 p-3 rounded-full bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 font-medium hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors">
-            <span className="text-xl leading-none font-light">+</span>
-            New Chat
-          </button>
-        </div>
-
-        {/* Chat History */}
+        {/* Sidebar Content - Scrollable */}
         <nav className="flex-1 flex flex-col overflow-y-auto px-2">
+
+          {/* Company Selector */}
           <div className="px-2 pb-2">
-            <input
-              type="text"
-              placeholder="Search conversations..."
-              onFocus={openSearchMode}
-              readOnly
-              className="w-full bg-white dark:bg-slate-800 border-2 border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 placeholder-slate-400 cursor-pointer hover:border-blue-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 focus:outline-none transition-colors"
-            />
+            <div className="relative">
+              <button onClick={(e) => { e.stopPropagation(); setIsCompanySelectorOpen(!isCompanySelectorOpen); }} className="w-full flex items-center justify-between p-2 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:border-blue-400 transition-colors">
+                <span className="text-xs font-medium text-slate-700 dark:text-slate-200 truncate">{selectedCompaniesText()}</span>
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+              </button>
+              {isCompanySelectorOpen && (
+                <div className="absolute top-full left-0 right-0 mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg z-20 max-h-48 overflow-y-auto">
+                  {availableCompanies.map(company => (
+                    <div key={company.id} onClick={(e) => { e.stopPropagation(); toggleCompanySelection(company.id); }} className="flex items-center gap-2 p-2 hover:bg-slate-100 dark:hover:bg-slate-700 cursor-pointer">
+                      <div className={`w-4 h-4 rounded border flex items-center justify-center ${selectedCompanyIds.includes(company.id) ? 'bg-blue-600 border-blue-600' : 'border-slate-300 dark:border-slate-600'}`}>
+                        {selectedCompanyIds.includes(company.id) && <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 text-white" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" /></svg>}
+                      </div>
+                      <span className="text-xs text-slate-700 dark:text-slate-300">{company.name}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Folders Section - Only show in Active tab */}
+          {activeTab === 'active' && (
+            <div className="px-2 pb-2">
+              <div className="flex items-center justify-between mb-1.5">
+                <p className="text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Folders</p>
+                <button
+                  onClick={createFolder}
+                  title="Create new folder"
+                  className="p-0.5 rounded hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-400 hover:text-blue-500 transition-colors"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+                </button>
+              </div>
+
+              {/* Folder Filter */}
+              {folders.length > 2 && (
+                <div className="relative mb-1.5">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+                  <input
+                    type="text"
+                    placeholder="Filter folders..."
+                    value={chatSearchTerm}
+                    onChange={(e) => setChatSearchTerm(e.target.value)}
+                    className="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-md pl-7 pr-2 py-1 text-xs text-slate-700 dark:text-slate-300 placeholder-slate-400 focus:border-blue-400 focus:outline-none transition-colors"
+                  />
+                </div>
+              )}
+
+              {/* Folder List */}
+              {filteredFolders.map(folder => (
+                <div
+                  key={folder.id}
+                  className="mb-1 rounded-lg transition-colors"
+                  onDrop={(e) => handleFolderDrop(e, folder.id)}
+                  onDragOver={handleFolderDragOver}
+                  onDragLeave={handleFolderDragLeave}
+                >
+                  {/* Folder Header */}
+                  <div className="flex items-center group">
+                    <button
+                      onClick={() => toggleFolderExpansion(folder.id)}
+                      className="flex-1 flex items-center gap-2 py-1.5 px-2 rounded-lg text-sm text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/50 transition-colors"
+                    >
+                      {/* Expand/Collapse Arrow */}
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        className={`h-3 w-3 transition-transform flex-shrink-0 ${expandedFolderIds.includes(folder.id) ? 'rotate-90' : ''}`}
+                        fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                      </svg>
+                      {/* Folder Icon */}
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-amber-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                      </svg>
+
+                      {/* Folder Name (Editable or Static) */}
+                      {editingFolderId === folder.id ? (
+                        <input
+                          type="text"
+                          value={editingFolderName}
+                          onChange={(e) => setEditingFolderName(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') renameFolder();
+                            if (e.key === 'Escape') { setEditingFolderId(null); setEditingFolderName(''); }
+                          }}
+                          onBlur={renameFolder}
+                          autoFocus
+                          onClick={(e) => e.stopPropagation()}
+                          className="flex-1 bg-white dark:bg-slate-900 border border-blue-400 rounded px-1 py-0.5 text-xs outline-none"
+                        />
+                      ) : (
+                        <span className="truncate text-xs font-medium">{folder.name}</span>
+                      )}
+                      {(folder.chatCount || 0) > 0 && (
+                        <span className="text-[10px] text-slate-400 ml-auto">{folder.chatCount}</span>
+                      )}
+                    </button>
+
+                    {/* Folder Menu Button */}
+                    <div className="relative">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); const rect = (e.target as HTMLElement).getBoundingClientRect(); setMenuPosition({ top: rect.bottom + 4, left: rect.right }); setActiveFolderMenuId(activeFolderMenuId === folder.id ? null : folder.id); }}
+                        className="p-1 rounded-md opacity-0 group-hover:opacity-100 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-400 transition-opacity"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
+                        </svg>
+                      </button>
+                      {activeFolderMenuId === folder.id && (
+                        <div className="absolute right-0 top-0 mt-0 w-28 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl z-[200] py-1" style={{ position: 'fixed', top: menuPosition.top, left: menuPosition.left - 112 }}>
+                          <button
+                            onClick={() => { setEditingFolderId(folder.id); setEditingFolderName(folder.name); setActiveFolderMenuId(null); }}
+                            className="w-full text-left px-3 py-1.5 text-xs hover:bg-slate-100 dark:hover:bg-slate-700 flex items-center gap-2"
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
+                            Rename
+                          </button>
+                          <button
+                            onClick={() => openFolderDeleteConfirmation(folder.id, folder.name)}
+                            className="w-full text-left px-3 py-1.5 text-xs hover:bg-red-50 dark:hover:bg-red-900/20 text-red-600 dark:text-red-400 flex items-center gap-2"
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                            Delete
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Expanded Folder Contents */}
+                  {expandedFolderIds.includes(folder.id) && (folder.chats?.length ?? 0) > 0 && (
+                    <div className="ml-5 pl-2 border-l border-slate-200 dark:border-slate-700">
+                      {(folder.chats || []).map((chat: ChatSession) => (
+                        <div key={chat.id} className="relative group/chat">
+                          <button
+                            onClick={() => { setSelectedSessionId(chat.id); setIsSearchMode(false); }}
+                            className={`w-full text-left py-1.5 px-2 rounded-md flex items-center gap-2 mb-0.5 text-xs transition-colors pr-6 ${chat.id === selectedSessionId ? 'bg-slate-200 dark:bg-slate-800 text-slate-900 dark:text-white' : 'hover:bg-slate-100 dark:hover:bg-slate-800/50 text-slate-500 dark:text-slate-400'}`}
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 opacity-40 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" /></svg>
+                            <span className="truncate">{chat.title}</span>
+                          </button>
+                          {/* Remove from folder */}
+                          <button
+                            onClick={() => removeChatFromFolder(chat.id, folder.id)}
+                            title="Remove from folder"
+                            className="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 rounded opacity-0 group-hover/chat:opacity-100 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-400 transition-opacity"
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+
+          )}
+
+          {/* Chat History */}
+          <div className="px-2 pb-2">
             <p className="mb-2 text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider">{activeTab === 'active' ? 'Recent' : 'Archived'}</p>
             {filteredChatHistory.map(session => (
-              <div key={session.id} className="relative group">
+              <div
+                key={session.id}
+                className="relative group"
+                draggable
+                onDragStart={(e) => handleChatDragStart(e, session.id)}
+                onDragEnd={() => setDraggedChatId(null)}
+              >
                 <button onClick={() => { setSelectedSessionId(session.id); setIsSearchMode(false); }}
-                  className={`w-full text-left py-2 px-3 rounded-lg flex items-center gap-3 mb-1 text-sm transition-colors pr-8 ${session.id === selectedSessionId ? 'bg-slate-200 dark:bg-slate-800 text-slate-900 dark:text-white' : 'hover:bg-slate-100 dark:hover:bg-slate-800/50 text-slate-600 dark:text-slate-400'}`}>
+                  className={`w-full text-left py-2 px-3 rounded-lg flex items-center gap-3 mb-1 text-sm transition-colors pr-8 ${session.id === selectedSessionId ? 'bg-slate-200 dark:bg-slate-800 text-slate-900 dark:text-white' : 'hover:bg-slate-100 dark:hover:bg-slate-800/50 text-slate-600 dark:text-slate-400'} ${draggedChatId === session.id ? 'opacity-50' : ''}`}>
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 opacity-50 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" /></svg>
                   <span className="truncate">{session.title}</span>
                 </button>
 
-                {/* 3-Dots Menu Trigger - Show for all chats */}
+                {/* 3-Dots Menu Trigger */}
                 <button
-                  onClick={(e) => { e.stopPropagation(); setActiveMenuSessionId(activeMenuSessionId === session.id ? null : session.id); }}
+                  onClick={(e) => { e.stopPropagation(); const rect = (e.target as HTMLElement).getBoundingClientRect(); setMenuPosition({ top: rect.bottom + 4, left: rect.right }); setActiveMenuSessionId(activeMenuSessionId === session.id ? null : session.id); }}
                   className={`absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded-md opacity-0 group-hover:opacity-100 transition-opacity ${activeMenuSessionId === session.id ? 'opacity-100 bg-slate-200 dark:bg-slate-700' : 'hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-400'}`}
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" /></svg>
@@ -1103,7 +1560,7 @@ function App() {
 
                 {/* Dropdown Menu */}
                 {activeMenuSessionId === session.id && (
-                  <div className="absolute right-0 top-full mt-1 w-32 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl z-20 py-1 overflow-hidden" style={{ top: '80%' }}>
+                  <div className="absolute right-0 top-0 w-32 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl z-[200] py-1 overflow-hidden" style={{ position: 'fixed', top: menuPosition.top, left: menuPosition.left - 128 }}>
                     <button onClick={(e) => renameSession(e, session.id)} className="w-full text-left px-3 py-2 text-xs hover:bg-slate-100 dark:hover:bg-slate-700 flex items-center gap-2">
                       <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
                       Rename
@@ -1155,8 +1612,12 @@ function App() {
             </button>
           </div>
 
-          <button onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500">
-            {theme === 'dark' ? '🌙' : '☀️'}
+          <button onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500" title="Toggle theme">
+            {theme === 'dark' ? (
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" /></svg>
+            ) : (
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" /></svg>
+            )}
           </button>
         </header>
 
@@ -1262,19 +1723,19 @@ function App() {
                         onClick={() => setCurrentUserInput("Show me the employee count by department")}
                         className="px-4 py-2 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-full text-sm hover:bg-blue-500 hover:text-white transition-colors"
                       >
-                        📊 Employee count by department
+                        Employee count by department
                       </button>
                       <button
                         onClick={() => setCurrentUserInput("What are the top 5 highest paid employees?")}
                         className="px-4 py-2 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-full text-sm hover:bg-blue-500 hover:text-white transition-colors"
                       >
-                        💰 Top 5 highest paid
+                        Top 5 highest paid
                       </button>
                       <button
                         onClick={() => setCurrentUserInput("Generate a summary report for this month")}
                         className="px-4 py-2 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-full text-sm hover:bg-blue-500 hover:text-white transition-colors"
                       >
-                        📝 Monthly summary
+                        Monthly summary
                       </button>
                     </div>
                   </div>
@@ -1291,12 +1752,12 @@ function App() {
                 )}
                 <div className={`max-w-2xl relative group ${message.sender === 'user' ? 'bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 rounded-2xl rounded-tr-sm px-5 py-3' : 'text-slate-700 dark:text-slate-300 px-1 py-1'}`}>
                   {message.sender === 'user' ? (
-                    <p className="whitespace-pre-wrap">{message.text}</p>
+                    <p className="whitespace-pre-wrap" dangerouslySetInnerHTML={{ __html: searchHighlight ? highlightText(message.text, searchHighlight) : message.text }} />
                   ) : (
                     <>
                       <div className="prose prose-sm max-w-none prose-slate dark:prose-invert"
                         dangerouslySetInnerHTML={{
-                          __html: typingMessageId === message.id ? displayedText : message.text
+                          __html: typingMessageId === message.id ? displayedText : (searchHighlight ? highlightText(message.text, searchHighlight) : message.text)
                         }} />
                       {typingMessageId === message.id && (
                         <span className="inline-block w-1 h-4 bg-blue-500 ml-1 animate-pulse"></span>
@@ -1337,82 +1798,84 @@ function App() {
             )}
           </div>
 
-          {/* Input Area */}
-          <div className="px-4 pb-6 pt-2 w-full">
-            <form onSubmit={sendMessage} className="relative bg-slate-50 dark:bg-slate-800/50 border border-black dark:border-slate-400 rounded-2xl p-3 shadow-sm focus-within:ring-2 focus-within:ring-blue-100 dark:focus-within:ring-blue-900/30 transition-all">
+          {/* Input Area - hidden in search mode */}
+          {!isSearchMode && (
+            <div className="px-4 pb-6 pt-2 w-full">
+              <form onSubmit={sendMessage} className="relative bg-slate-50 dark:bg-slate-800/50 border border-black dark:border-slate-400 rounded-2xl p-3 shadow-sm focus-within:ring-2 focus-within:ring-blue-100 dark:focus-within:ring-blue-900/30 transition-all">
 
-              {/* Top: Textarea (Borderless) */}
-              <textarea ref={promptTextareaRef}
-                value={currentUserInput} onChange={e => { setCurrentUserInput(e.target.value); autoResizeTextarea(); }}
-                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
-                placeholder="Ask anything, or use the mic to speak..."
-                className="w-full bg-transparent border-none outline-none focus:ring-0 p-2 text-slate-800 dark:text-slate-200 placeholder-slate-400 resize-none min-h-[44px] max-h-[200px]"
-                rows={1}
-              />
+                {/* Top: Textarea (Borderless) */}
+                <textarea ref={promptTextareaRef}
+                  value={currentUserInput} onChange={e => { setCurrentUserInput(e.target.value); autoResizeTextarea(); }}
+                  onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
+                  placeholder="Ask anything, or use the mic to speak..."
+                  className="w-full bg-transparent border-none outline-none focus:ring-0 p-2 text-slate-800 dark:text-slate-200 placeholder-slate-400 resize-none min-h-[44px] max-h-[200px]"
+                  rows={1}
+                />
 
-              {/* Bottom Toolbar */}
-              <div className="flex items-center justify-between mt-2 pt-1 border-t border-transparent">
-                <div className="flex items-center gap-2">
-                  {/* Add File Button */}
-                  <input type="file" ref={fileInputRef} className="hidden" />
-                  <button type="button" onClick={() => fileInputRef.current?.click()} className="p-1.5 rounded-full hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-500 transition-colors" title="Add file">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
-                  </button>
-
-                  {/* Model Selector */}
-                  <div className="relative">
-                    <button type="button" onClick={(e) => { e.stopPropagation(); setIsModelSelectorOpen(!isModelSelectorOpen); setIsCompanySelectorOpen(false); }} className="flex items-center gap-1.5 px-2 py-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-sm font-medium text-slate-600 dark:text-slate-300 transition-colors">
-                      {currentModel.name}
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                {/* Bottom Toolbar */}
+                <div className="flex items-center justify-between mt-2 pt-1 border-t border-transparent">
+                  <div className="flex items-center gap-2">
+                    {/* Add File Button */}
+                    <input type="file" ref={fileInputRef} className="hidden" />
+                    <button type="button" onClick={() => fileInputRef.current?.click()} className="p-1.5 rounded-full hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-500 transition-colors" title="Add file">
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
                     </button>
-                    {isModelSelectorOpen && (
-                      <div onClick={(e) => e.stopPropagation()} className="absolute bottom-full mb-2 left-0 w-48 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl z-20 py-1 overflow-hidden">
-                        {availableModels.map(model => (
-                          <button key={model.id} type="button" onClick={() => handleModelSelect(model.id)} className={`w-full text-left px-3 py-2 text-sm hover:bg-slate-100 dark:hover:bg-slate-700 ${currentModel.id === model.id ? 'text-blue-600 font-medium' : 'text-slate-700 dark:text-slate-300'}`}>
-                            {model.name}
-                          </button>
-                        ))}
-                      </div>
+
+                    {/* Model Selector */}
+                    <div className="relative">
+                      <button type="button" onClick={(e) => { e.stopPropagation(); setIsModelSelectorOpen(!isModelSelectorOpen); setIsCompanySelectorOpen(false); }} className="flex items-center gap-1.5 px-2 py-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-sm font-medium text-slate-600 dark:text-slate-300 transition-colors">
+                        {currentModel.name}
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                      </button>
+                      {isModelSelectorOpen && (
+                        <div onClick={(e) => e.stopPropagation()} className="absolute bottom-full mb-2 left-0 w-48 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl z-20 py-1 overflow-hidden">
+                          {availableModels.map(model => (
+                            <button key={model.id} type="button" onClick={() => handleModelSelect(model.id)} className={`w-full text-left px-3 py-2 text-sm hover:bg-slate-100 dark:hover:bg-slate-700 ${currentModel.id === model.id ? 'text-blue-600 font-medium' : 'text-slate-700 dark:text-slate-300'}`}>
+                              {model.name}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    {/* Voice Input */}
+                    <button type="button" onClick={toggleVoiceRecording} disabled={isBotTyping || typingMessageId !== null} className={`p-2 rounded-full transition-colors ${isRecording ? 'bg-red-100 text-red-600 animate-pulse' : 'hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-500'} ${(isBotTyping || typingMessageId !== null) ? 'opacity-50 cursor-not-allowed' : ''}`} title="Use Microphone">
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>
+                    </button>
+
+                    {/* Stop Generation Button - visible during typing */}
+                    {(isBotTyping || typingMessageId !== null) && (
+                      <button
+                        type="button"
+                        onClick={stopGeneration}
+                        className="p-2 rounded-full bg-red-600 text-white hover:bg-red-700 transition-colors shadow-sm flex items-center gap-1"
+                        title="Stop generating"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="currentColor" viewBox="0 0 24 24">
+                          <rect x="6" y="6" width="12" height="12" rx="2" />
+                        </svg>
+                      </button>
                     )}
+
+                    {/* Send Button - disabled during generation */}
+                    <button
+                      type="submit"
+                      disabled={!currentUserInput || isBotTyping || typingMessageId !== null}
+                      className="p-2 rounded-full bg-blue-600 text-white disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:cursor-not-allowed hover:bg-blue-700 transition-colors shadow-sm"
+                      title={isBotTyping || typingMessageId !== null ? "Wait for response to complete" : "Send message"}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" /></svg>
+                    </button>
                   </div>
                 </div>
-
-                <div className="flex items-center gap-2">
-                  {/* Voice Input */}
-                  <button type="button" onClick={toggleVoiceRecording} disabled={isBotTyping || typingMessageId !== null} className={`p-2 rounded-full transition-colors ${isRecording ? 'bg-red-100 text-red-600 animate-pulse' : 'hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-500'} ${(isBotTyping || typingMessageId !== null) ? 'opacity-50 cursor-not-allowed' : ''}`} title="Use Microphone">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>
-                  </button>
-
-                  {/* Stop Generation Button - visible during typing */}
-                  {(isBotTyping || typingMessageId !== null) && (
-                    <button
-                      type="button"
-                      onClick={stopGeneration}
-                      className="p-2 rounded-full bg-red-600 text-white hover:bg-red-700 transition-colors shadow-sm flex items-center gap-1"
-                      title="Stop generating"
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="currentColor" viewBox="0 0 24 24">
-                        <rect x="6" y="6" width="12" height="12" rx="2" />
-                      </svg>
-                    </button>
-                  )}
-
-                  {/* Send Button - disabled during generation */}
-                  <button
-                    type="submit"
-                    disabled={!currentUserInput || isBotTyping || typingMessageId !== null}
-                    className="p-2 rounded-full bg-blue-600 text-white disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:cursor-not-allowed hover:bg-blue-700 transition-colors shadow-sm"
-                    title={isBotTyping || typingMessageId !== null ? "Wait for response to complete" : "Send message"}
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" /></svg>
-                  </button>
-                </div>
+              </form>
+              <div className="text-center mt-2">
+                <p className="text-xs text-slate-400 dark:text-slate-500">Gemini can make mistakes. Consider checking important information.</p>
               </div>
-            </form>
-            <div className="text-center mt-2">
-              <p className="text-xs text-slate-400 dark:text-slate-500">Gemini can make mistakes. Consider checking important information.</p>
             </div>
-          </div>
+          )}
         </main>
       </div>
 
@@ -1458,6 +1921,49 @@ function App() {
         </div>
       )}
 
+      {/* Folder Delete Confirmation Modal */}
+      {folderDeleteModal.isOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl p-6 max-w-md w-full mx-4 transform transition-all">
+            {/* Warning Icon */}
+            <div className="flex justify-center mb-4">
+              <div className="w-14 h-14 rounded-full bg-red-100 dark:bg-red-900/30 flex items-center justify-center">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-7 w-7 text-red-600 dark:text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+              </div>
+            </div>
+
+            {/* Title */}
+            <h3 className="text-xl font-semibold text-center text-slate-800 dark:text-slate-200 mb-2">
+              Delete Folder?
+            </h3>
+
+            {/* Message */}
+            <p className="text-center text-slate-600 dark:text-slate-400 mb-6">
+              Are you sure you want to delete "<span className="font-medium text-slate-800 dark:text-slate-200">{folderDeleteModal.folderName}</span>"? Chats will be unassigned but not deleted.
+            </p>
+
+            {/* Buttons */}
+            <div className="flex gap-3">
+              <button
+                onClick={() => setFolderDeleteModal({ isOpen: false, folderId: null, folderName: '' })}
+                className="flex-1 px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors font-medium"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={deleteFolder}
+                className="flex-1 px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white transition-colors font-medium"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+
       {/* Archived Chat Warning Modal */}
       {showArchivedWarning && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -1491,6 +1997,40 @@ function App() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
             </svg>
             <span className="font-medium">{copyToast.message}</span>
+          </div>
+        </div>
+      )}
+      {/* Rename Chat Modal */}
+      {renamingSessionId !== null && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => { setRenamingSessionId(null); setRenamingSessionTitle(''); }}>
+          <div className="bg-white dark:bg-slate-800 rounded-2xl p-6 w-full max-w-md mx-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-4">Rename Chat</h3>
+            <input
+              type="text"
+              value={renamingSessionTitle}
+              onChange={(e) => setRenamingSessionTitle(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') submitRename();
+                if (e.key === 'Escape') { setRenamingSessionId(null); setRenamingSessionTitle(''); }
+              }}
+              autoFocus
+              className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-xl px-4 py-2.5 text-slate-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+              placeholder="Enter Chat Title"
+            />
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={() => { setRenamingSessionId(null); setRenamingSessionTitle(''); }}
+                className="flex-1 px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors font-medium"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={submitRename}
+                className="flex-1 px-4 py-2.5 rounded-xl bg-blue-600 text-white hover:bg-blue-700 transition-colors font-medium"
+              >
+                Rename
+              </button>
+            </div>
           </div>
         </div>
       )}
