@@ -36,15 +36,17 @@ public class FolderService : IFolderService
             {
                 Id = f.Id,
                 Name = f.Name,
-                ChatCount = f.ChatMappings.Count,
+                ChatCount = f.ChatMappings.Count(cfm => !cfm.ChatSession.IsArchived),
                 CreatedAt = f.CreatedAt,
-                Chats = f.ChatMappings.Select(cfm => new ChatSessionDto
-                {
-                    Id = cfm.ChatSession.Id,
-                    Title = cfm.ChatSession.Title,
-                    LastActiveAt = cfm.ChatSession.LastActiveAt,
-                    Model = cfm.ChatSession.ModelId ?? "Unknown"
-                }).ToList()
+                Chats = f.ChatMappings
+                    .Where(cfm => !cfm.ChatSession.IsArchived)
+                    .Select(cfm => new ChatSessionDto
+                    {
+                        Id = cfm.ChatSession.Id,
+                        Title = cfm.ChatSession.Title,
+                        LastActiveAt = cfm.ChatSession.LastActiveAt,
+                        Model = cfm.ChatSession.ModelId ?? "Unknown"
+                    }).ToList()
             })
             .ToListAsync();
     }
@@ -110,7 +112,7 @@ public class FolderService : IFolderService
         {
             Id = folder.Id,
             Name = folder.Name,
-            ChatCount = await _context.ChatFolderMappings.CountAsync(cfm => cfm.FolderId == folderId),
+            ChatCount = await _context.ChatFolderMappings.CountAsync(cfm => cfm.FolderId == folderId && !cfm.ChatSession.IsArchived),
             CreatedAt = folder.CreatedAt
         };
     }
@@ -168,7 +170,7 @@ public class FolderService : IFolderService
     public async Task<List<ChatSessionDto>> GetFolderChatsAsync(int folderId)
     {
         return await _context.ChatFolderMappings
-            .Where(cfm => cfm.FolderId == folderId)
+            .Where(cfm => cfm.FolderId == folderId && !cfm.ChatSession.IsArchived)
             .OrderByDescending(cfm => cfm.AddedAt)
             .Select(cfm => new ChatSessionDto
             {

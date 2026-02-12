@@ -72,21 +72,29 @@ function App() {
   // Fetch Real User
   useEffect(() => {
     fetch('/api/whoami')
-      .then(res => res.json())
+      .then(res => {
+        if (!res.ok) {
+          setAuthStatus('unauthenticated');
+          throw new Error("Authentication failed");
+        }
+        return res.json();
+      })
       .then(data => {
         if (data.isAuthenticated) {
           const fullName = data.name || "User";
           const cleanName = fullName.split('\\').pop(); // Remove domain prefix
           const initials = cleanName.split('.').map((n: string) => n[0]).join('').toUpperCase().substring(0, 2);
 
+          // If HCMS ID is missing or not mapped, they are unauthorized for the specific app features
+          const isInvalidId = data.hcmsEmployeeId === "NOT FOUND (Hydration Failed)" || data.hcmsEmployeeId === "NOT_MAPPED";
+
           setUser({
             name: cleanName.replace('.', ' '), // "ali.ahmed" -> "ali ahmed"
-            role: data.hcmsEmployeeId !== "NOT FOUND (Hydration Failed)" ? "Employee" : "Guest",
+            role: !isInvalidId ? "Employee" : "Guest",
             avatar: initials
           });
 
-          // If HCMS ID is missing, they are unauthorized for the specific app features
-          if (data.hcmsEmployeeId === "NOT FOUND (Hydration Failed)") {
+          if (isInvalidId) {
             setAuthStatus('unauthorized');
           } else {
             setAuthStatus('authenticated');
@@ -134,6 +142,7 @@ function App() {
   const [renamingSessionId, setRenamingSessionId] = useState<number | null>(null);
   const [renamingSessionTitle, setRenamingSessionTitle] = useState('');
   const [highlightTerm, setHighlightTerm] = useState('');
+  const [archivedCount, setArchivedCount] = useState<number>(0);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -409,6 +418,7 @@ function App() {
   // Load Chats on Mount & Tab Change
   useEffect(() => {
     fetchChats();
+    fetchArchivedCount();
   }, [activeTab]);
 
   // Load Messages when Session Changes
@@ -492,6 +502,8 @@ function App() {
       if (res.ok) {
         const data = await res.json();
         setChatHistory(data);
+        if (isArchived) setArchivedCount(data.length);
+
         // If active session is not in list (e.g. switched tabs), deselect
         if (selectedSessionId && !data.find((c: any) => c.id === selectedSessionId)) {
           setSelectedSessionId(null);
@@ -499,6 +511,18 @@ function App() {
       }
     } catch (e) {
       console.error("Failed to load chats", e);
+    }
+  };
+
+  const fetchArchivedCount = async () => {
+    try {
+      const res = await fetch('/api/chats?archived=true');
+      if (res.ok) {
+        const data = await res.json();
+        setArchivedCount(data.length);
+      }
+    } catch (e) {
+      console.error("Failed to fetch archived count", e);
     }
   };
 
@@ -556,6 +580,7 @@ function App() {
       await fetch(`/api/chats/${deleteConfirmModal.sessionId}`, { method: 'DELETE' });
       setChatHistory(prev => prev.filter(c => c.id !== deleteConfirmModal.sessionId));
       if (selectedSessionId === deleteConfirmModal.sessionId) setSelectedSessionId(null);
+      fetchFolders();
     } catch (e) { console.error("Failed to delete", e); }
     setDeleteConfirmModal({ isOpen: false, sessionId: null, sessionTitle: '' });
   };
@@ -572,6 +597,8 @@ function App() {
       // Remove from current view (Active tab)
       setChatHistory(prev => prev.filter(c => c.id !== id));
       if (selectedSessionId === id) setSelectedSessionId(null);
+      fetchArchivedCount();
+      fetchFolders();
     } catch (e) { console.error("Failed to archive", e); }
     setActiveMenuSessionId(null);
   };
@@ -584,6 +611,8 @@ function App() {
       setChatHistory(prev => prev.filter(c => c.id !== id));
       setActiveTab('active');
       if (selectedSessionId === id) setSelectedSessionId(null);
+      fetchArchivedCount();
+      fetchFolders();
     } catch (e) { console.error("Failed to unarchive", e); }
     setActiveMenuSessionId(null);
   };
@@ -1362,9 +1391,14 @@ function App() {
           </button>
           <button
             onClick={() => setActiveTab('archived')}
-            className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-colors ${activeTab === 'archived' ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800'}`}
+            className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-all flex items-center justify-center gap-1.5 ${activeTab === 'archived' ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800'}`}
           >
             Archived
+            {archivedCount > 0 && (
+              <span className="flex h-4 w-4 items-center justify-center bg-blue-500 text-[9px] font-bold text-white rounded-full shadow-[0_0_5px_rgba(59,130,246,0.4)]">
+                {archivedCount}
+              </span>
+            )}
           </button>
         </div>
 

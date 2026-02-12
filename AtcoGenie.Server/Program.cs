@@ -125,8 +125,7 @@ app.MapGet("/api/whoami", (HttpContext context) =>
     };
     
     return info;
-})
-.AllowAnonymous(); 
+}); 
 
 // DIAGNOSTIC: Test AI Connection (Returns raw Google API error)
 app.MapGet("/api/test-ai-connection", async (AtcoGenie.Server.Application.Services.IGeminiService gemini, CancellationToken ct) =>
